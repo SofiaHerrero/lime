@@ -1,3 +1,19 @@
+# lime-ner (fork)
+
+LIME has been modified for my MSc Thesis "Interpretability in sequence tagging models for NER" to include functionality for Named Entity Recognition.
+
+The functionalities included are:
+* Have perturbations that do not break an entity. That is, if the entity is "New York", when perturbing, do not remove "New" and leave "York".
+This would create an artificial example since "York" would have a tag I without having a tag B before (BIO tag scheme).
+* Locate and store an entity (modified the IndexedString object for this). This is required for the previous functionality.
+
+The functions modified are in `lime_text.py` and are:
+* IndexedString `__init__` function.
+* Function `explain_instance`
+* Function `__data_labels_distances`
+
+To obtain an explanation that does not break an entity when perturbing call the method `LimeTextExplainer.explain_instance()` with a parameter `entity=[2, 3]` where \[2, 3] is a list with the indices of the entity words in the sentence. Use `entity=[]` to user regular perturbations.
+
 # lime
 
 [![Build Status](https://travis-ci.org/marcotcr/lime.svg?branch=master)](https://travis-ci.org/marcotcr/lime)

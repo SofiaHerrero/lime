@@ -1,5 +1,7 @@
 """
 Functions for explaining text classifiers.
+
+Modifications by Sofia Herrero.
 """
 from __future__ import unicode_literals
 
@@ -27,12 +29,15 @@ class TextDomainMapper(explanation.DomainMapper):
         """
         self.indexed_string = indexed_string
 
-    def map_exp_ids(self, exp, positions=False):
+    def map_exp_ids(self, exp, positions=False, real_positions=False):
         """Maps ids to words or word-position strings.
 
         Args:
             exp: list of tuples [(id, weight), (id,weight)]
             positions: if True, also return word positions
+            real_positions: (added functionality) if True, return real word positions in the sentence. Only works for
+                            split_expression = ' '. Divide by 2 because there is always one space between words. Also,
+                            only works for bow=False since it will append only one position.
 
         Returns:
             list of tuples (word, weight), or (word_positions, weight) if
@@ -45,6 +50,14 @@ class TextDomainMapper(explanation.DomainMapper):
                     map(str,
                         self.indexed_string.string_position(x[0])))), x[1])
                    for x in exp]
+
+        elif real_positions:
+            l_ex = []
+            for x in exp:
+                t = ('%s_%s' % (self.indexed_string.word(x[0]), int(self.indexed_string.positions[x[0]] / 2)), x[1])
+                l_ex.append(t)
+            return l_ex
+
         else:
             exp = [(self.indexed_string.word(x[0]), x[1]) for x in exp]
         return exp
@@ -82,35 +95,25 @@ class TextDomainMapper(explanation.DomainMapper):
 class IndexedString(object):
     """String with various indexes."""
 
-    def __init__(self, raw_string, split_expression=r'\W+', bow=True):
+    def __init__(self, raw_string, split_expression=r'\W+', bow=True, entity=[]):
         """Initializer.
 
         Args:
             raw_string: string with raw text in it
-            split_expression: Regex string or callable. If regex string, will be used with re.split.
-                If callable, the function should return a list of tokens.
+            split_expression: string will be split by this.
             bow: if True, a word is the same everywhere in the text - i.e. we
                  will index multiple occurrences of the same word. If False,
                  order matters, so that the same word will have different ids
                  according to position.
+            entity: list with the indices of the entity for which the
+                explanations are required. Used to perturb the entity always
+                as a group and don't break it apart.
         """
+        split_expression_non_vocab = r'\W+'  # added for the conll data set
         self.raw = raw_string
-
-        if callable(split_expression):
-            tokens = split_expression(self.raw)
-            self.as_list = self._segment_with_tokens(self.raw, tokens)
-            tokens = set(tokens)
-
-            def non_word(string):
-                return string not in tokens
-
-        else:
-            # with the split_expression as a non-capturing group (?:), we don't need to filter out
-            # the separator character from the split results.
-            self.as_list = re.split(r'(%s)|$' % split_expression, self.raw)
-            non_word = re.compile(r'(%s)|$' % split_expression).match
-
+        self.as_list = re.split(r'(%s)|$' % split_expression, self.raw)
         self.as_np = np.array(self.as_list)
+        non_word = re.compile(r'(%s)|$' % split_expression_non_vocab).match
         self.string_start = np.hstack(
             ([0], np.cumsum([len(x) for x in self.as_np[:-1]])))
         vocab = {}
@@ -136,6 +139,26 @@ class IndexedString(object):
                 self.positions.append(i)
         if not bow:
             self.positions = np.array(self.positions)
+
+        # Get new indices for the entity (if there is one)
+        if entity:
+            # Calculate indices with respect to as_list encoding (only works for space as the split_expression)
+            if split_expression == ' ':
+                self.entity_as_list = [ele * 2 for ele in entity]
+            else:
+                print('Need to split the example per space (set split_expression == ' ' (in lime_text.py).')
+                return
+            # Calculate indices with respect to the vocab encoding (the one LIME calculates by removing nonvocab tokens)
+            self.entity_as_vocab = []
+            for ele in self.entity_as_list:
+                # Need to use np since positions is a numpy array
+                idx_array = np.where(self.positions == ele)  # returns a tuple (array, dtype)
+                if idx_array[0].size != 0:
+                    self.entity_as_vocab.append(idx_array[0].item())
+                else:
+                    print('Problem finding indices of the entities (np.where in lime_text.py).')
+                    print('For raw string ' + raw_string)
+                    return
 
     def raw_string(self):
         """Returns the original raw string"""
@@ -175,111 +198,6 @@ class IndexedString(object):
                             else 'UNKWORDZ' for i in range(mask.shape[0])])
         return ''.join([self.as_list[v] for v in mask.nonzero()[0]])
 
-    @staticmethod
-    def _segment_with_tokens(text, tokens):
-        """Segment a string around the tokens created by a passed-in tokenizer"""
-        list_form = []
-        text_ptr = 0
-        for token in tokens:
-            inter_token_string = []
-            while not text[text_ptr:].startswith(token):
-                inter_token_string.append(text[text_ptr])
-                text_ptr += 1
-                if text_ptr >= len(text):
-                    raise ValueError("Tokenization produced tokens that do not belong in string!")
-            text_ptr += len(token)
-            if inter_token_string:
-                list_form.append(''.join(inter_token_string))
-            list_form.append(token)
-        if text_ptr < len(text):
-            list_form.append(text[text_ptr:])
-        return list_form
-
-    def __get_idxs(self, words):
-        """Returns indexes to appropriate words."""
-        if self.bow:
-            return list(itertools.chain.from_iterable(
-                [self.positions[z] for z in words]))
-        else:
-            return self.positions[words]
-
-
-class IndexedCharacters(object):
-    """String with various indexes."""
-
-    def __init__(self, raw_string, bow=True):
-        """Initializer.
-
-        Args:
-            raw_string: string with raw text in it
-            bow: if True, a char is the same everywhere in the text - i.e. we
-                 will index multiple occurrences of the same character. If False,
-                 order matters, so that the same word will have different ids
-                 according to position.
-        """
-        self.raw = raw_string
-        self.as_list = list(self.raw)
-        self.as_np = np.array(self.as_list)
-        self.string_start = np.arange(len(self.raw))
-        vocab = {}
-        self.inverse_vocab = []
-        self.positions = []
-        self.bow = bow
-        non_vocab = set()
-        for i, char in enumerate(self.as_np):
-            if char in non_vocab:
-                continue
-            if bow:
-                if char not in vocab:
-                    vocab[char] = len(vocab)
-                    self.inverse_vocab.append(char)
-                    self.positions.append([])
-                idx_char = vocab[char]
-                self.positions[idx_char].append(i)
-            else:
-                self.inverse_vocab.append(char)
-                self.positions.append(i)
-        if not bow:
-            self.positions = np.array(self.positions)
-
-    def raw_string(self):
-        """Returns the original raw string"""
-        return self.raw
-
-    def num_words(self):
-        """Returns the number of tokens in the vocabulary for this document."""
-        return len(self.inverse_vocab)
-
-    def word(self, id_):
-        """Returns the word that corresponds to id_ (int)"""
-        return self.inverse_vocab[id_]
-
-    def string_position(self, id_):
-        """Returns a np array with indices to id_ (int) occurrences"""
-        if self.bow:
-            return self.string_start[self.positions[id_]]
-        else:
-            return self.string_start[[self.positions[id_]]]
-
-    def inverse_removing(self, words_to_remove):
-        """Returns a string after removing the appropriate words.
-
-        If self.bow is false, replaces word with UNKWORDZ instead of removing
-        it.
-
-        Args:
-            words_to_remove: list of ids (ints) to remove
-
-        Returns:
-            original raw string with appropriate words removed.
-        """
-        mask = np.ones(self.as_np.shape[0], dtype='bool')
-        mask[self.__get_idxs(words_to_remove)] = False
-        if not self.bow:
-            return ''.join([self.as_list[i] if mask[i]
-                            else chr(0) for i in range(mask.shape[0])])
-        return ''.join([self.as_list[v] for v in mask.nonzero()[0]])
-
     def __get_idxs(self, words):
         """Returns indexes to appropriate words."""
         if self.bow:
@@ -301,8 +219,7 @@ class LimeTextExplainer(object):
                  feature_selection='auto',
                  split_expression=r'\W+',
                  bow=True,
-                 random_state=None,
-                 char_level=False):
+                 random_state=None):
         """Init function.
 
         Args:
@@ -315,8 +232,7 @@ class LimeTextExplainer(object):
                 'forward_selection', 'lasso_path', 'none' or 'auto'.
                 See function 'explain_instance_with_data' in lime_base.py for
                 details on what each of the options does.
-            split_expression: Regex string or callable. If regex string, will be used with re.split.
-                If callable, the function should return a list of tokens.
+            split_expression: strings will be split by this.
             bow: if True (bag of words), will perturb input data by removing
                 all occurrences of individual words.  Explanations will be in
                 terms of these words. Otherwise, will explain in terms of
@@ -326,8 +242,6 @@ class LimeTextExplainer(object):
             random_state: an integer or numpy.RandomState that will be used to
                 generate random numbers. If None, the random state will be
                 initialized using the internal numpy seed.
-            char_level: an boolean identifying that we treat each character
-                as an independent occurence in the string
         """
 
         # exponential kernel
@@ -341,7 +255,6 @@ class LimeTextExplainer(object):
         self.feature_selection = feature_selection
         self.bow = bow
         self.split_expression = split_expression
-        self.char_level = char_level
 
     def explain_instance(self,
                          text_instance,
@@ -351,7 +264,8 @@ class LimeTextExplainer(object):
                          num_features=10,
                          num_samples=5000,
                          distance_metric='cosine',
-                         model_regressor=None):
+                         model_regressor=None,
+                         entity=[]):
         """Generates explanations for a prediction.
 
         First, we generate neighborhood data by randomly hiding features from
@@ -376,18 +290,20 @@ class LimeTextExplainer(object):
             model_regressor: sklearn regressor to use in explanation. Defaults
             to Ridge regression in LimeBase. Must have model_regressor.coef_
             and 'sample_weight' as a parameter to model_regressor.fit()
+            entity: list with the indices of the entity for which the
+                explanations are required. Used to perturb the entity always
+                as a group and don't break it apart.
         Returns:
             An Explanation object (see explanation.py) with the corresponding
             explanations.
         """
-
-        indexed_string = IndexedCharacters(
-            text_instance, bow=self.bow) if self.char_level else IndexedString(
-            text_instance, bow=self.bow, split_expression=self.split_expression)
+        indexed_string = IndexedString(text_instance, bow=self.bow,
+                                       split_expression=self.split_expression,
+                                       entity=entity)
         domain_mapper = TextDomainMapper(indexed_string)
         data, yss, distances = self.__data_labels_distances(
             indexed_string, classifier_fn, num_samples,
-            distance_metric=distance_metric)
+            distance_metric=distance_metric, entity=entity)
         if self.class_names is None:
             self.class_names = [str(x) for x in range(yss[0].shape[0])]
         ret_exp = explanation.Explanation(domain_mapper=domain_mapper,
@@ -411,7 +327,8 @@ class LimeTextExplainer(object):
                                 indexed_string,
                                 classifier_fn,
                                 num_samples,
-                                distance_metric='cosine'):
+                                distance_metric='cosine',
+                                entity=[]):
         """Generates a neighborhood around a prediction.
 
         Generates neighborhood data by randomly removing words from
@@ -425,6 +342,9 @@ class LimeTextExplainer(object):
             num_samples: size of the neighborhood to learn the linear model
             distance_metric: the distance metric to use for sample weighting,
                 defaults to cosine similarity.
+            entity: list with the indices of the entity for which the
+                explanations are required. Used to perturb the entity always
+                as a group and don't break it apart.
 
 
         Returns:
@@ -452,6 +372,17 @@ class LimeTextExplainer(object):
         for i, size in enumerate(sample, start=1):
             inactive = self.random_state.choice(features_range, size,
                                                 replace=False)
+            if entity:
+                # Ensure that if one part of the entity is selected as inactive,
+                # the whole entity is set as well to inactive.
+                inactive_entity = any(idx in inactive for idx in indexed_string.entity_as_vocab)
+                if inactive_entity:
+                    data[i, indexed_string.entity_as_vocab] = 0
+                    # Add to inactive those indices
+                    common = set(inactive) & set(indexed_string.entity_as_vocab)
+                    non_common = set(indexed_string.entity_as_vocab) - common
+                    if non_common:
+                        inactive = np.append(inactive, list(non_common))
             data[i, inactive] = 0
             inverse_data.append(indexed_string.inverse_removing(inactive))
         labels = classifier_fn(inverse_data)
