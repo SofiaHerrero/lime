@@ -12,7 +12,7 @@ The functions modified are in `lime_text.py` and are:
 * Function `explain_instance`
 * Function `__data_labels_distances`
 
-To obtain an explanation that does not break an entity when perturbing call the method `LimeTextExplainer.explain_instance()` with a parameter `entity=[2, 3]` where \[2, 3] is a list with the indices of the entity words in the sentence. Use `entity=[]` to user regular perturbations.
+To obtain an explanation that does not break an entity when perturbing call the method `LimeTextExplainer.explain_instance()` with a parameter `entity=list` with a list of the indices of the entity words in the sentence, i.e. \[2, 3]. Use `entity=[]` to user regular perturbations.
 
 # lime
 
